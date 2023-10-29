@@ -93,4 +93,6 @@ void stress_test( const size_t num_ops ) {
 
 int main( [[maybe_unused]] int argc, [[maybe_unused]] char* argv[] ) {
     stress_test<16>( 1000000 );
+
+    return 0;
 }

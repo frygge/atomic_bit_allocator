@@ -420,4 +420,6 @@ int main( [[maybe_unused]] int argc, [[maybe_unused]] char* argv[] ) {
         simple_tests_uint32<32>();
         simple_tests_uint64<32>();
     }
+
+    return 0;
 }

@@ -15,3 +15,7 @@ add_executable(test_mt
         test/test_mt.cpp
         )
 
+enable_testing()
+
+add_test( NAME test_st COMMAND $<TARGET_FILE:test_st>)
+add_test( NAME test_mt COMMAND $<TARGET_FILE:test_mt>)
