@@ -117,13 +117,13 @@ struct _atomic_bit_allocator {
 
             rollback_mid:
                 for( ; w > start_word; --w ) {
-                    bitmap_[w].store( 0, mo );
+                    bitmap_[w].store( 0, std::memory_order::relaxed );
                 }
-                bitmap_[start_word].fetch_and( ~mask_first | ( prev_first & mask_first ));
+                bitmap_[start_word].fetch_and( ~mask_first | ( prev_first & mask_first ), std::memory_order::relaxed);
                 continue;
 
             rollback_first:
-                bitmap_[start_word].fetch_and( ~mask_first | ( prev_first & mask_first ), mo );
+                bitmap_[start_word].fetch_and( ~mask_first | ( prev_first & mask_first ), std::memory_order::relaxed );
             }
         } while( true );
     }
@@ -145,10 +145,7 @@ struct _atomic_bit_allocator {
         else {
             size_t w;
             const auto mask_first = ( ~WordT( 0 ) >> start_bit_in_word );
-            const auto mask_last = ( ~WordT( 0 ) << bits_per_word - last_bit_in_word - 1 );
-
-            WordT prev_first;
-            WordT prev_last;
+            const auto mask_last = ( ~WordT( 0 ) << ( bits_per_word - last_bit_in_word - 1 ));
 
             // alter first word: bits range to the least significant bit
             bitmap_[start_word].fetch_and( ~mask_first, mo );
@@ -311,6 +308,9 @@ struct serialized_bit_allocator {
     }
 
     [[nodiscard]] size_t alloc( size_t len, std::memory_order mo = std::memory_order::acquire ) {
+        if( len == 0 )
+            throw std::bad_alloc();
+
         auto start_pos = bit_allocator_[0].alloc( len, 0, end_pos_, mo );
         if( start_pos == end_pos_ ) {
             throw std::bad_alloc();
