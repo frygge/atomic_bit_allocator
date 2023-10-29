@@ -6,6 +6,7 @@
 #include <bitset>
 #include <cstring>
 #include <vector>
+#include <iostream>
 #include "atomic_bit_allocator.h"
 
 using namespace std::chrono_literals;
@@ -26,15 +27,15 @@ struct bit_allocator_buffer {
 };
 
 struct alignas(128) aligned_ctr {
-    size_t ctr;
+    std::atomic<size_t> ctr;
 };
 
 template<size_t T>
 void stress_test( const size_t num_ops ) {
-    const auto MAX_ALLOC = 8;
+    const auto MAX_ALLOC = 16;
     bit_allocator_buffer<uint8_t, MAX_ALLOC*MAX_ALLOC*T> buffer;
     std::memset( &buffer, 0, sizeof( buffer ));
-    auto* ballocator = new ( &buffer ) jps::serialized_bit_allocator<uint64_t>( sizeof( buffer ));
+    auto* ballocator = new ( &buffer ) jps::serialized_bit_allocator<uint8_t>( sizeof( buffer ));
 
     // manage workers
     std::vector<std::thread> workers;
@@ -55,7 +56,7 @@ void stress_test( const size_t num_ops ) {
 
             // increment locked ctrs values
             for( auto c = p; c < p+n; ++c ) {
-                ctrs[c].ctr = ctrs[c].ctr + 1;
+                ctrs[c].ctr.store( ctrs[c].ctr.load() + 1 );
                 local_val += 1;
             }
 
@@ -80,12 +81,16 @@ void stress_test( const size_t num_ops ) {
 
     // compare the results
     size_t locked_sum = 0;
-    for( auto& c: ctrs )
-        locked_sum += c.ctr;
-    assert( locked_sum == total_sum );
+    for( auto& c: ctrs ) {
+        locked_sum += c.ctr.load();
+        if( c.ctr != 0 )
+            std::cout << c.ctr << " ";
+    }
+    if( locked_sum != total_sum )
+        throw std::exception();
 }
 
 
 int main( [[maybe_unused]] int argc, [[maybe_unused]] char* argv[] ) {
-    stress_test<16>( 10000000 );
+    stress_test<16>( 1000000 );
 }

@@ -52,27 +52,28 @@ struct _atomic_bit_allocator {
                 throw std::bad_alloc();
 
             // try to allocate it
-            const auto start_word = _which_word( start_pos );
+            const auto first_word = _which_word( start_pos );
             const auto start_bit_in_word = _which_bit_in_word( start_pos );
             const auto last_word = _which_word( start_pos + len - 1 );
             const auto last_bit_in_word = _which_bit_in_word( start_pos + len - 1 );
 
             // just alter one word
-            if( start_word == last_word ) {
+            if( first_word == last_word ) {
                 const auto mask = get_mask( start_bit_in_word, last_bit_in_word );
 
-                const auto prev = bitmap_[start_word].fetch_or( mask, mo );
+                const auto prev = bitmap_[first_word].fetch_or( mask, mo );
 
                 if(( prev & mask ) == WordT( 0 ))
                     return start_pos;
 
                 // on failure, rollback and try another range
-                bitmap_[start_word].fetch_and( ~mask | ( prev & mask ), mo);
+                bitmap_[first_word].fetch_and( ~mask | ( prev & mask ), mo);
             }
 
                 // altering multiple words required
             else {
                 size_t w;
+                WordT tmp;
                 const WordT mask_first = ( WordT( ~WordT( 0 )) >> start_bit_in_word );
                 const WordT mask_last = ( WordT( ~WordT( 0 )) << ( bits_per_word - last_bit_in_word - 1 ));
 
@@ -81,20 +82,20 @@ struct _atomic_bit_allocator {
 
                 // alter first word: bits range to the least significant bit
                 {
-                    prev_first = bitmap_[start_word].fetch_or( mask_first, mo );
+                    prev_first = bitmap_[first_word].fetch_or( mask_first, mo );
                     if(( prev_first & mask_first ) != WordT( 0 ))
                         goto rollback_first;
                 }
 
                 // alter mid-range words: they shall all be zero and be set to ~0
                 {
-                    w = start_word + 1;
+                    w = first_word + 1;
                     for( ; w < last_word; ++w ) {
                         auto prev = bitmap_[w].fetch_or( ~WordT( 0 ), mo );
 
                         // rollback on failure
                         if( prev != 0 ) {
-                            bitmap_[w].fetch_and( prev, mo );
+                            bitmap_[w--].fetch_and( prev, mo );
                             break;
                         }
                     }
@@ -112,18 +113,31 @@ struct _atomic_bit_allocator {
                 }
 
             [[maybe_unused]] rollback_last:
-                // rollback on failure
-                bitmap_[last_word].fetch_and( ~mask_last | ( prev_last & mask_last ), mo );
+                // get the mask of the bits to keep
+                tmp = WordT( ~mask_last ) | ( prev_last & mask_last );
+
+                // zero out the bits we have to rollback. track the bits we actually reset in *tmp*
+                tmp = WordT( ~tmp ) & bitmap_[last_word].fetch_and( tmp, mo );
+
+                // check if the bits we rolled back are indeed the ones we had to roll back
+                assert( ( tmp & prev_last ) == 0 );
+                --w;
 
             rollback_mid:
-                for( ; w > start_word; --w ) {
-                    bitmap_[w].store( 0, std::memory_order::relaxed );
+                for( ; w > first_word; --w ) {
+                    assert( ( tmp = bitmap_[w].load( std::memory_order::acquire )) == WordT( ~WordT( 0 )));
+                    bitmap_[w].store( 0, std::memory_order::release );
                 }
-                bitmap_[start_word].fetch_and( ~mask_first | ( prev_first & mask_first ), std::memory_order::relaxed);
-                continue;
 
             rollback_first:
-                bitmap_[start_word].fetch_and( ~mask_first | ( prev_first & mask_first ), std::memory_order::relaxed );
+                // get the mask of the bits to keep
+                tmp = WordT( ~mask_first ) | ( prev_first & mask_first );
+
+                // zero out the bits we have to rollback. track the bits we actually reset in *tmp*
+                tmp = WordT( ~tmp ) & bitmap_[first_word].fetch_and( tmp, mo );
+
+                // check if the bits we rolled back are indeed the ones we had to roll back
+                assert( ( tmp & prev_first ) == 0 );
             }
         } while( true );
     }
@@ -144,8 +158,8 @@ struct _atomic_bit_allocator {
         // altering multiple words required
         else {
             size_t w;
-            const auto mask_first = ( ~WordT( 0 ) >> start_bit_in_word );
-            const auto mask_last = ( ~WordT( 0 ) << ( bits_per_word - last_bit_in_word - 1 ));
+            const WordT mask_first = ( WordT( ~WordT( 0 )) >> start_bit_in_word );
+            const WordT mask_last = ( WordT( ~WordT( 0 )) << ( bits_per_word - last_bit_in_word - 1 ));
 
             // alter first word: bits range to the least significant bit
             bitmap_[start_word].fetch_and( ~mask_first, mo );
@@ -287,11 +301,6 @@ protected:
 template<typename W = uint64_t>
 struct serialized_bit_allocator {
     using bit_allocator = _atomic_bit_allocator<W>;
-    using WordT = bit_allocator::WordT;
-
-    static constexpr size_t bytes_per_word = bit_allocator::bytes_per_word;
-    static constexpr size_t bits_per_word = bit_allocator::bits_per_word;
-    static constexpr size_t bits_per_byte = bit_allocator::bits_per_byte;
 
     explicit constexpr serialized_bit_allocator( size_t buffer_len = 64 ) :
             end_pos_(
