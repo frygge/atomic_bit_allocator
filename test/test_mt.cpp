@@ -7,7 +7,7 @@
 #include <cstring>
 #include <vector>
 #include <iostream>
-#include "atomic_bit_allocator.h"
+#include "atomic_bit_allocator/atomic_bit_allocator.h"
 
 using namespace std::chrono_literals;
 
