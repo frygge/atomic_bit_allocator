@@ -10,4 +10,8 @@ add_executable(test_st
         atomic_bit_allocator.h
         test/test_st.cpp
         )
+add_executable(test_mt
+        atomic_bit_allocator.h
+        test/test_mt.cpp
+        )
 
