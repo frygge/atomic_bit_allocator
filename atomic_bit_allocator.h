@@ -35,8 +35,8 @@ struct _atomic_bit_allocator {
     static constexpr size_t bytes_per_word = sizeof( WordT );
     static constexpr uint8_t bits_per_word = bits_per_byte*bytes_per_word;
 
-    _atomic_bit_allocator() { bitmap_[0] = 0; }
-    _atomic_bit_allocator& operator=( const W bitset ) {
+    constexpr _atomic_bit_allocator() { bitmap_[0] = 0; }
+    constexpr _atomic_bit_allocator& operator=( const W bitset ) {
         bitmap_[0] = bitset;
         return *this;
     }
@@ -48,6 +48,9 @@ struct _atomic_bit_allocator {
             // find a free range
             start_pos = find_unset_range( start_pos, end_pos, len, mo );
 
+            if( start_pos + len > end_pos )
+                throw std::bad_alloc();
+
             // try to allocate it
             const auto start_word = _which_word( start_pos );
             const auto start_bit_in_word = _which_bit_in_word( start_pos );
@@ -56,22 +59,22 @@ struct _atomic_bit_allocator {
 
             // just alter one word
             if( start_word == last_word ) {
-                const auto mask =
-                        ( ~WordT( 0 ) >> start_bit_in_word ) &
-                        ( ~WordT( 0 ) << ( bits_per_word - last_bit_in_word - 1 ) );
+                const auto mask = get_mask( start_bit_in_word, last_bit_in_word );
 
                 const auto prev = bitmap_[start_word].fetch_or( mask, mo );
 
+                if(( prev & mask ) == WordT( 0 ))
+                    return start_pos;
+
                 // on failure, rollback and try another range
-                if(( prev & mask ) != WordT( 0 ))
-                    bitmap_[start_word].fetch_and( ~mask | ( prev & mask ), mo);
+                bitmap_[start_word].fetch_and( ~mask | ( prev & mask ), mo);
             }
 
                 // altering multiple words required
             else {
                 size_t w;
-                const auto mask_first = ( ~WordT( 0 ) >> start_bit_in_word );
-                const auto mask_last = ( ~WordT( 0 ) << bits_per_word - last_bit_in_word - 1 );
+                const WordT mask_first = ( WordT( ~WordT( 0 )) >> start_bit_in_word );
+                const WordT mask_last = ( WordT( ~WordT( 0 )) << ( bits_per_word - last_bit_in_word - 1 ));
 
                 WordT prev_first;
                 WordT prev_last;
@@ -108,7 +111,7 @@ struct _atomic_bit_allocator {
                         return start_pos;
                 }
 
-            rollback_last:
+            [[maybe_unused]] rollback_last:
                 // rollback on failure
                 bitmap_[last_word].fetch_and( ~mask_last | ( prev_last & mask_last ), mo );
 
@@ -133,9 +136,7 @@ struct _atomic_bit_allocator {
 
         // just alter one word
         if( start_word == last_word ) {
-            const auto mask =
-                    ( ~WordT( 0 ) >> start_bit_in_word ) &
-                    ( ~WordT( 0 ) << ( bits_per_word - last_bit_in_word - 1 ) );
+            const auto mask = get_mask( start_bit_in_word, last_bit_in_word );
 
             bitmap_[start_word].fetch_and( ~mask, mo );
         }
@@ -175,7 +176,7 @@ protected:
         const auto start_word = _which_word( start_pos );
         auto start_bit_in_word = _which_bit_in_word( start_pos );
 
-        auto bits = bitmap_[start_word].load( mo ) << start_bit_in_word;
+        WordT bits = bitmap_[start_word].load( mo ) << start_bit_in_word;
         start_bit_in_word += std::countl_one( bits );
         if( start_bit_in_word < bits_per_word )
             return bits_per_word*start_word + start_bit_in_word;
@@ -198,7 +199,7 @@ protected:
         const auto start_word = _which_word( start_pos );
         auto start_bit_in_word = _which_bit_in_word( start_pos );
 
-        auto bits = bitmap_[start_word].load( mo ) << start_bit_in_word;
+        WordT bits = bitmap_[start_word].load( mo ) << start_bit_in_word;
         start_bit_in_word += std::countl_zero( bits );
         if( start_bit_in_word < bits_per_word )
             return bits_per_word*start_word + start_bit_in_word;
@@ -206,7 +207,7 @@ protected:
         const size_t end_word = _which_word( end_pos );
         for( size_t w = start_word+1; w < end_word; ++w ) {
             bits = bitmap_[w].load( mo );
-            if( bits != ~static_cast<WordT>( 0 ) )
+            if( bits != static_cast<WordT>( 0 ) )
                 return w*bits_per_word + std::countl_zero( bits );
         }
 
@@ -233,12 +234,18 @@ protected:
         return end_pos;
     }
 
+    static constexpr WordT get_mask( size_t first_bit, size_t last_bit ) {
+        return
+                WordT( ~WordT( 0 )) >> first_bit &
+                WordT( ~WordT( 0 )) << ( bits_per_word - last_bit - 1 );
+    }
+
     /**
      * Return the number of words necessary to store a particular number of bits.
      * @param end_pos The number of bits
      * @return The required number of words
      */
-    static constexpr size_t _sizeof_array( const size_t end_pos ) {
+    static constexpr size_t _sizeof_array( size_t end_pos ) {
         return end_pos == 0 ? 0 : _which_word( end_pos-1 )+1;
     }
     /**
@@ -246,7 +253,7 @@ protected:
      * @param end_pos The number of bits
      * @return The required memory usage for the _atomic_bitset array
      */
-    static constexpr size_t _sizeof( const size_t end_pos ) { return sizeof( WordT ) * _sizeof_array( end_pos ); }
+    static constexpr size_t _sizeof( size_t end_pos ) { return sizeof( WordT ) * _sizeof_array( end_pos ); }
 
     /**
      * Return the index to the word containing a particular bit.
@@ -268,7 +275,7 @@ protected:
     static constexpr size_t _which_byte_in_word( size_t pos ) { return _which_bit_in_word( pos )/bits_per_byte; }
 
     std::atomic<WordT> bitmap_[1];
-    static_assert( std::atomic<WordT>::is_always_lockfree );
+    static_assert( std::atomic<WordT>::is_always_lock_free );
 };
 
 
@@ -289,7 +296,7 @@ struct serialized_bit_allocator {
     static constexpr size_t bits_per_word = bit_allocator::bits_per_word;
     static constexpr size_t bits_per_byte = bit_allocator::bits_per_byte;
 
-    explicit serialized_bit_allocator( size_t buffer_len = 64 ) :
+    explicit constexpr serialized_bit_allocator( size_t buffer_len = 64 ) :
             end_pos_(
                     (
                             ( buffer_len-sizeof( end_pos_ ))            // remaining buffer for the bitmap ...
@@ -298,6 +305,10 @@ struct serialized_bit_allocator {
                     *bit_allocator::bits_per_byte                       // ... and scaled to number of bits
             )
     {}
+
+    constexpr size_t size() const {
+        return end_pos_;
+    }
 
     [[nodiscard]] size_t alloc( size_t len, std::memory_order mo = std::memory_order::acquire ) {
         auto start_pos = bit_allocator_[0].alloc( len, 0, end_pos_, mo );
