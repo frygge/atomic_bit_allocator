@@ -83,8 +83,6 @@ void stress_test( const size_t num_ops ) {
     size_t locked_sum = 0;
     for( auto& c: ctrs ) {
         locked_sum += c.ctr.load();
-        if( c.ctr != 0 )
-            std::cout << c.ctr << " ";
     }
     if( locked_sum != total_sum )
         throw std::exception();
