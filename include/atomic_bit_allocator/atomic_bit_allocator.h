@@ -141,7 +141,7 @@ struct _reentrant_lock_free_bit_allocator {
             }
         } while( true );
     }
-    void free( size_t start_pos, size_t len, std::memory_order mo = std::memory_order::release ) {
+    void free( size_t start_pos, size_t len, std::memory_order mo = std::memory_order::release ) noexcept {
         // try to allocate it
         const auto start_word = _which_word( start_pos );
         const auto start_bit_in_word = _which_bit_in_word( start_pos );
@@ -173,12 +173,13 @@ struct _reentrant_lock_free_bit_allocator {
             bitmap_[last_word].fetch_and( ~mask_last, mo );
         }
     }
-    [[nodiscard]] size_t usage( std::memory_order memory_order = std::memory_order::relaxed ) const {
+    [[nodiscard]] size_t usage( std::memory_order memory_order = std::memory_order::relaxed ) const noexcept {
         const auto w = bitmap_[0].load( memory_order );
         return std::popcount( w );
     }
 
     static constexpr bool is_reentrant() { return true; }
+    static constexpr bool throws() { return false; }
 
 protected:
     /*
@@ -344,7 +345,8 @@ struct _single_threaded_bit_allocator {
             return start_pos;
         }
     }
-    void free( size_t start_pos, size_t len, [[maybe_unused]] std::memory_order mo = std::memory_order::release ) {
+    void free( size_t start_pos, size_t len,
+               [[maybe_unused]] std::memory_order mo = std::memory_order::release ) noexcept {
         // try to allocate it
         const auto start_word = _which_word( start_pos );
         const auto start_bit_in_word = _which_bit_in_word( start_pos );
@@ -374,11 +376,13 @@ struct _single_threaded_bit_allocator {
             bitmap_[last_word] &= ~mask_last;
         }
     }
-    [[nodiscard]] size_t usage( [[maybe_unused]] std::memory_order memory_order = std::memory_order::relaxed ) const {
+    [[nodiscard]] size_t
+    usage( [[maybe_unused]] std::memory_order memory_order = std::memory_order::relaxed ) const noexcept {
         return std::popcount( bitmap_[0] );
     }
 
     static constexpr bool is_reentrant() { return false; }
+    static constexpr bool throws() { return false; }
 
 protected:
     /*
@@ -496,11 +500,19 @@ protected:
  *
  * An object of this type can and should be constructed in-place in a pre-allocated buffer given its size.
  *
- * The access to this data structure is lock-free and reentrant.
+ * The access to this data structure is lock-free, reentrant, and does not throw exceptions, when using the
+ * proposed `bit_allocator` and `bad_alloc_throws` (default) template parameters.
  *
  */
-template<typename W = uint64_t, template<typename> typename bit_allocator = _reentrant_lock_free_bit_allocator>
+template<typename W = uint64_t,
+        template<typename> typename bit_allocator = _reentrant_lock_free_bit_allocator,
+        bool bad_alloc_throws = false>
 struct serialized_bit_allocator {
+private:
+    static constexpr bool alloc_throws = bit_allocator<W>::throws();
+    static constexpr bool alloc_reentrant = bit_allocator<W>::is_reentrant();
+
+public:
 
     explicit constexpr serialized_bit_allocator( size_t buffer_len = 64 ) :
             end_pos_(
@@ -514,46 +526,61 @@ struct serialized_bit_allocator {
             )
     {}
 
-    constexpr size_t size() const {
+    constexpr size_t size() const noexcept {
         return end_pos_;
     }
 
-    [[nodiscard]] size_t alloc( size_t len, std::memory_order mo = std::memory_order::acquire ) {
-        if( len == 0 )
-            throw std::bad_alloc();
+    [[nodiscard]] size_t
+    alloc( size_t len, std::memory_order mo = std::memory_order::acquire )
+            noexcept( !bad_alloc_throws && !alloc_throws && !alloc_reentrant ) {
+        if( bad_alloc_throws ) {
+            if( len == 0 )
+                throw std::bad_alloc();
+        }
+        else {
+            if( len == 0 )
+                return end_pos_;
+        }
 
-        if( !bit_allocator<W>::is_reentrant() )
+        if( !alloc_reentrant )
             get_global_mutex().lock();
         auto start_pos = bit_allocator_[0].alloc( len, 0, end_pos_, mo );
-        if( !bit_allocator<W>::is_reentrant() )
+        if( !alloc_reentrant )
             get_global_mutex().unlock();
 
-        if( start_pos == end_pos_ )
-            throw std::bad_alloc();
+        if( bad_alloc_throws ) {
+            if( start_pos == end_pos_ )
+                throw std::bad_alloc();
+        }
 
         return start_pos;
     }
-    void free( size_t start_pos, size_t len, std::memory_order mo = std::memory_order::release ) {
-        if( !bit_allocator<W>::is_reentrant() )
+    void free( size_t start_pos,
+               size_t len,
+               std::memory_order mo = std::memory_order::release )
+            noexcept( !bad_alloc_throws && !alloc_throws && !alloc_reentrant ) {
+        if( !alloc_reentrant )
             get_global_mutex().lock();
         bit_allocator_[0].free( start_pos, len, mo );
-        if( !bit_allocator<W>::is_reentrant() )
+        if( !alloc_reentrant )
             get_global_mutex().unlock();
     }
-    [[nodiscard]] size_t usage( std::memory_order memory_order = std::memory_order::acquire ) const {
+    [[nodiscard]] size_t
+    usage( std::memory_order memory_order = std::memory_order::relaxed ) const
+            noexcept( !bad_alloc_throws && !alloc_throws && !alloc_reentrant ) {
         size_t u = 0;
 
-        if( !bit_allocator<W>::is_reentrant() )
+        if( !alloc_reentrant )
             get_global_mutex().lock();
         for( auto w = 0ul; w <= ( end_pos_-1 )/bit_allocator<W>::bits_per_word; ++w )
-            u += bit_allocator_[w].usage( std::memory_order_relaxed );
-        if( !bit_allocator<W>::is_reentrant() )
+            u += bit_allocator_[w].usage( memory_order );
+        if( !alloc_reentrant )
             get_global_mutex().unlock();
         return u;
     }
 
 protected:
-    static std::mutex& get_global_mutex() {
+    static std::mutex& get_global_mutex() noexcept {
         static std::mutex m;
         return m;
     }
