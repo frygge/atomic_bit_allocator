@@ -35,7 +35,7 @@ struct _reentrant_lock_free_bit_allocator {
     static constexpr size_t bytes_per_word = sizeof( WordT );
     static constexpr uint8_t bits_per_word = bits_per_byte*bytes_per_word;
 
-    constexpr _reentrant_lock_free_bit_allocator() { bitmap_[0] = 0; }
+    constexpr _reentrant_lock_free_bit_allocator() {}
     constexpr _reentrant_lock_free_bit_allocator& operator=( const W bitset ) {
         bitmap_[0] = bitset;
         return *this;
@@ -300,7 +300,7 @@ struct _single_threaded_bit_allocator {
     static constexpr size_t bytes_per_word = sizeof( WordT );
     static constexpr uint8_t bits_per_word = bits_per_byte*bytes_per_word;
 
-    constexpr _single_threaded_bit_allocator() { bitmap_[0] = 0; }
+    constexpr _single_threaded_bit_allocator() {}
     constexpr _single_threaded_bit_allocator& operator=( const W bitset ) {
         bitmap_[0] = bitset;
         return *this;
