@@ -288,7 +288,10 @@ protected:
      */
     static constexpr size_t _which_byte_in_word( size_t pos ) { return _which_bit_in_word( pos )/bits_per_byte; }
 
-    std::atomic<WordT> bitmap_[1];
+    union {
+        WordT __bitmap__[1];
+        std::atomic<WordT> bitmap_[1];
+    };
     static_assert( std::atomic<WordT>::is_always_lock_free );
 };
 
